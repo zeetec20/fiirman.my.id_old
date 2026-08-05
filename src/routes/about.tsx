@@ -106,7 +106,7 @@ function About() {
             A short notice from the desk.
           </h1>
           <p className="font-serif-display italic text-fg-muted text-xl mt-4 leading-snug">
-            Curious person who became a software engineer, with interests far
+            Firman Justisio Lestari is a curious person who became a software engineer, with interests far
             beyond tech and always exploring nerdy ideas and random deep dives.
           </p>
         </div>

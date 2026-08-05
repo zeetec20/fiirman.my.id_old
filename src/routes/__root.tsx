@@ -71,7 +71,7 @@ const SITE_URL = 'https://fiirman.my.id'
 const SITE_NAME = 'Firman Lestari'
 const SITE_TITLE = 'Firman Lestari'
 const SITE_DESCRIPTION =
-  'Curious person who became a software engineer, with interests far beyond tech and always exploring nerdy ideas and random deep dives.'
+  'Firman Justisio Lestari is a curious person who became a software engineer, with interests far beyond tech and always exploring nerdy ideas and random deep dives.'
 const SITE_AUTHOR = 'Firman Justisio Lestari'
 const OG_IMAGE = `${SITE_URL}/logo512.png`
 

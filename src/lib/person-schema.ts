@@ -18,7 +18,7 @@ export const personSchema = {
   image: "https://avatars.githubusercontent.com/u/47957217?size=480",
   jobTitle: "Software Engineer",
   description:
-    "Curious person who became a software engineer, with interests far beyond tech and always exploring nerdy ideas and random deep dives.",
+    "Firman Justisio Lestari is a curious person who became a software engineer, with interests far beyond tech and always exploring nerdy ideas and random deep dives.",
   sameAs: [
     "https://github.com/zeetec20",
     "https://www.linkedin.com/in/firmanlestari",
