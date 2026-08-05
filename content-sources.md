@@ -55,39 +55,37 @@ After step 7, the articles live permanently in this repo. The upstream is no lon
 
 ---
 
-## Source B — Medium RSS
+## Source B — Medium
 
-**Origin:** `https://medium.com/feed/@jusles363`
+**Origin (post list):** `https://medium.com/feed/@firmanlestari` (RSS 2.0)
 
 - Returns latest ~10 posts as RSS 2.0 XML.
 - Each item contains: `<title>`, `<link>`, `<pubDate>`, `<category>` (multiple), `<content:encoded>` (full HTML body).
+- RSS supplies the post list (title/link/pubDate/tags) for every sync. **It does not supply the reliable body** — see below.
 
-**Script:** `scripts/sync-medium.ts` (to write)
+**Origin (post body, primary):** the live post page at `<link>`.
+
+Medium's RSS `content:encoded` is lossy: it drops inline `<code>` formatting entirely (confirmed — 0 `<code>` tags across a full feed fetch, vs. 9 `<pre>` block-code tags). The live post page embeds `window.__APOLLO_STATE__`, Medium's own structured content model, which has what RSS is missing: ordered `Paragraph` nodes with `markups` (`CODE`, `STRONG`, `EM`, `A`) and, for code blocks, the actual `codeBlockMetadata.lang` Medium stored (no heuristic needed). This is the primary body source.
+
+**Script:** `scripts/sync-medium.ts`
 
 **Deps:** `fast-xml-parser`, `turndown`, `turndown-plugin-gfm`, `gray-matter`. All dev deps — script runs at build/cron time, never in the Worker.
 
 **Pipeline per item:**
 
-1. Fetch RSS, parse with `fast-xml-parser`.
-2. For each `<item>`:
+1. Fetch RSS, parse with `fast-xml-parser`, for each `<item>`:
    - `link` → strip Medium's trailing `-<8char-hash>` → `slug`.
    - `pubDate` (`Wed, 15 Mar 2023 10:23:11 GMT`) → `DD-MM-YYYY`.
    - `category[]` → `tag[]`.
-3. Convert `<content:encoded>` HTML → Markdown via `turndown` (GFM plugin enabled).
-   - Preserve `<pre><code class="language-…">` → fenced code blocks with lang tag.
-   - Preserve `<blockquote>`, `<ul>`, `<ol>`, headings, inline `<code>`.
-   - Strip Medium-injected tracking spans, share buttons, "Follow me" footers.
-4. Image handling:
-   - First `<img>` → download to `public/article/<slug>/thumbnail.<ext>` (extension from Content-Type).
-   - Subsequent `<img>` → download to `public/article/<slug>/img-<N>.<ext>` (N starts at 1).
-   - Rewrite all body image URLs to local paths.
-   - Why download: Medium hot-linking is unreliable, breaks offline, and CDN URLs rotate.
-5. Build normalized frontmatter (see `content-schema.md`).
-6. Write `content/medium/<slug>.md` via `gray-matter`.
-7. **Idempotency:**
-   - If file doesn't exist → write.
-   - If file exists AND `sourceUrl` matches AND upstream `pubDate` not newer than file → skip.
-   - If upstream `pubDate` newer (Medium edit) → overwrite body + frontmatter, keep `createdAt` from original write.
+2. **Body — primary path:** `fetch(link)` with a browser UA, extract `window.__APOLLO_STATE__`, resolve `Post:*.content(...).bodyModel.paragraphs` (ordered refs) into paragraph objects. Build markdown directly from the paragraph model:
+   - `P`/`H1`-`H4`/`BQ`/`PQ`/`OLI`/`ULI` → matching markdown block, with `markups` applied as backticks/bold/italic/links.
+   - `PRE` → fenced block; language = `codeBlockMetadata.lang`, except box-drawing ASCII diagrams always force `text` regardless of the stored lang (Medium authors often leave a diagram's language selector on whatever was last used).
+   - `IMG` → not inlined as text; handled by the image pass below. First `IMG` paragraph → thumbnail (dropped from body); rest → inline `![]()` at their local path.
+   - Leading heading/bold paragraphs that just repeat the post title are dropped (Medium's model duplicates the title into the body).
+   - Any paragraph type not listed above renders as plain text with a `console.warn` naming the type, so a new Medium block type is visible in sync logs rather than silently mangled.
+3. **Body — fallback path:** if the page fetch fails, `__APOLLO_STATE__` isn't found, or the paragraph model can't be resolved, fall back to the original approach — convert `<content:encoded>` HTML → Markdown via `turndown` (GFM plugin enabled), preserving `<pre>`/`<blockquote>`/lists/headings/inline `<code>`, stripping Medium-injected tracking spans and boilerplate. This keeps sync from hard-failing if Medium changes the page's internal field names; it just loses inline-code fidelity for that one article until the primary path resolves again on the next run.
+4. Image handling (primary path): each `IMG` paragraph's URL is built as `https://miro.medium.com/v2/resize:fit:<width>/<metadata.id>` from the paragraph's own metadata. Fallback path: images are extracted by regex from the RSS HTML instead. Either way — first image → `public/article/<slug>/thumbnail.<ext>`, rest → `img-<N>.<ext>` (Content-Type-derived extension). Why download: Medium hot-linking is unreliable, breaks offline, and CDN URLs rotate.
+5. Build normalized frontmatter (see `content-schema.md`) and write `content/medium/<slug>.md` via `gray-matter`. Every run re-fetches and overwrites all synced articles — no pubDate-diff skip currently implemented.
 
 **Trigger options:**
 
@@ -103,7 +101,7 @@ After step 7, the articles live permanently in this repo. The upstream is no lon
 - Image hot-linking breaks.
 - No streaming benefit — articles are static.
 
-**Auth:** none. Public RSS.
+**Auth:** none. Public RSS feed; live post pages are the author's own public (non-paywalled) posts, fetched unauthenticated.
 
 **Limitation:** RSS caps at the latest ~10 posts. For backfill of older posts:
 - Use Medium account export (Settings → Account → Download your information).

@@ -18,7 +18,7 @@ source: medium
 sourceUrl: >-
   https://firmanlestari.medium.com/how-to-handle-duplicate-events-safely-in-bullmq-using-idempotency-1e896f0352c1?source=rss-de2e53234d37------2
 ---
-Idempotency is actually a concept that we often use in software engineering without realizing it. In many cases, we already apply this pattern because it helps us build more reliable systems with fewer bugs.
+Idempotency is actually a concept that we often use in software engineering without realizing it. In many cases, we already apply this pattern because it helps us build more reliable systems with fewer bugs.
 
 So, what is idempotency?
 
@@ -28,20 +28,26 @@ For example, imagine we have a function to deactivate a user account. If the fun
 
 This concept becomes even more important in distributed systems, especially when using pub/sub or queue systems. We should never fully trust that an event will only be sent once. Sometimes publishers accidentally send duplicate events, or the worker crashes and retries the same job again. Crashes can happen because of many things like memory spikes, infrastructure issues, or even simple coding mistakes.
 
-For this example, I created a small demo project using BullMQ to explain idempotency in a simpler way.
+For this example, I created a small demo project using BullMQ to explain idempotency in a simpler way.
 
-The case is about sending upgrade offer emails to free trial users after they registered for one week. The goal is simple: even if the event is triggered multiple times, the user should only receive one email.
+The case is about sending upgrade offer emails to free trial users after they registered for one week. The goal is simple: even if the event is triggered multiple times, the user should only receive one email.
 
-Repository: [https://github.com/zeetec20/express-idempotency](https://github.com/zeetec20/express-idempotency)  
+Repository: [https://github.com/zeetec20/express-idempotency](https://github.com/zeetec20/express-idempotency)
 Stack:
 
--   Runtime: Bun + TypeScript (using Nix flake)
--   Web: Express + zod
--   Queue: BullMQ + Redis
--   Database: MySQL + Drizzle ORM
--   Dashboard: bull-board
--   Infrastructure: docker-compose
--   Architecture: single process (server + worker together)
+- Runtime: Bun + TypeScript (using Nix flake)
+
+- Web: Express + zod
+
+- Queue: BullMQ + Redis
+
+- Database: MySQL + Drizzle ORM
+
+- Dashboard: bull-board
+
+- Infrastructure: docker-compose
+
+- Architecture: single process (server + worker together)
 
 Project structure:
 
@@ -72,30 +78,35 @@ src/
 
 The flow in this project is pretty straightforward.
 
-Every 12 hours, the cron job scans users that:
+Every 12 hours, the cron job scans users that:
 
--   still use the free plan
--   registered between 7 and 10 days ago
+- still use the free plan
 
-After getting the candidate users, the system checks Redis to see whether the offer email was already sent before.
+- registered between 7 and 10 days ago
 
-If the Redis key already exists:
+After getting the candidate users, the system checks Redis to see whether the offer email was already sent before.
 
--   skip the user
+If the Redis key already exists:
 
-If the Redis key does not exist:
+- skip the user
 
--   send the email
--   if success → save Redis key
--   if failed → do not save the key, so the next cron execution can retry again
+If the Redis key does not exist:
 
-Because of this approach, it doesn’t matter if:
+- send the email
 
--   BullMQ retries the job
--   the scheduler accidentally runs twice
--   the endpoint gets triggered multiple times
+- if success → save Redis key
 
-The user will still only receive one email.
+- if failed → do not save the key, so the next cron execution can retry again
+
+Because of this approach, it doesn’t matter if:
+
+- BullMQ retries the job
+
+- the scheduler accidentally runs twice
+
+- the endpoint gets triggered multiple times
+
+The user will still only receive one email.
 
 Flow:
 
@@ -131,7 +142,7 @@ Flow:
 
 Main idempotency logic:
 
-```ts
+```typescript
 const result = await processUser(user.id);
 
 if (result === "sent") sent++;
@@ -139,12 +150,14 @@ else if (result === "skipped") skipped++;
 else failed++;
 ```
 
-The reason I use Redis instead of adding a new field into the users table is because this operation is only needed temporarily. Adding another column would make the table a bit more polluted for something that only runs once per user.
+The reason I use Redis instead of adding a new field into the `users` table is because this operation is only needed temporarily. Adding another column would make the table a bit more polluted for something that only runs once per user.
 
-Using Redis also makes the process simpler and faster:
+Using Redis also makes the process simpler and faster:
 
--   fast read/write
--   flexible TTL expiration
--   no need to update the user row every time an email is sent
+- fast read/write
+
+- flexible TTL expiration
+
+- no need to update the user row every time an email is sent
 
 So overall, idempotency is not only about avoiding duplicate actions, but also about making systems safer when retries, crashes, or duplicated events happen unexpectedly.

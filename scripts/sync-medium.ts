@@ -1,7 +1,14 @@
 #!/usr/bin/env bun
 /**
- * Build-time Medium RSS sync. Idempotent: existing files only get overwritten
- * if upstream pubDate is newer. See content-sources.md Source B for the spec.
+ * Build-time Medium sync. Every run re-fetches and overwrites every synced
+ * article — no pubDate-diff skip. See content-sources.md Source B for the spec.
+ *
+ * Body source: for each RSS item, fetch the live post page and parse the
+ * embedded `window.__APOLLO_STATE__` content model (ordered paragraphs with
+ * markups — bold/italic/link/inline-code, plus code-block language). This is
+ * what Medium's own page renders from. The RSS feed's `content:encoded` is
+ * lossy — it drops inline `<code>` formatting entirely — so it's kept only
+ * as a fallback if the live-page fetch or the embedded model is unavailable.
  *
  * Usage:
  *   bun run scripts/sync-medium.ts
@@ -20,6 +27,8 @@ const CONTENT_DIR = path.join(ROOT, "content", "medium");
 const ASSET_ROOT = path.join(ROOT, "public", "article");
 const FEED_URL = "https://medium.com/feed/@firmanlestari";
 const WRITER = "zeetec20";
+const PAGE_FETCH_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
 type RssItem = {
   title: string;
@@ -27,6 +36,26 @@ type RssItem = {
   pubDate: string;
   "content:encoded": string;
   category?: string | string[];
+};
+
+// Medium's internal content model, resolved out of window.__APOLLO_STATE__.
+type ApolloMarkup = {
+  type: string;
+  start: number;
+  end: number;
+  href?: string | null;
+};
+
+type ApolloParagraph = {
+  type: string;
+  text?: string;
+  markups?: ApolloMarkup[];
+  codeBlockMetadata?: { lang?: string | null } | null;
+  metadata?: {
+    id?: string;
+    originalWidth?: number;
+    originalHeight?: number;
+  } | null;
 };
 
 const turndown = new TurndownService({
@@ -38,14 +67,9 @@ const turndown = new TurndownService({
 turndown.use(gfm);
 
 /**
- * Force every <pre> into a fenced code block regardless of inner structure.
- * Medium often emits <pre><span>…</span></pre> without a <code> child, so the
- * default GFM `fencedCodeBlock` rule never matches and code leaks out as a
- * regular paragraph. This rule runs last and overrides.
- */
-/**
- * Best-effort language detection for Medium code blocks. Medium RSS does
- * not carry a language hint, so we sniff content. Falls back to "text".
+ * Best-effort language detection for code blocks. Used as a fallback when
+ * Medium's own `codeBlockMetadata.lang` is missing (RSS never carries a
+ * language hint at all, so this is the only option on that path).
  */
 function detectLanguage(code: string): string {
   const head = code.trim().slice(0, 400);
@@ -108,6 +132,12 @@ function detectLanguage(code: string): string {
   return "text";
 }
 
+/**
+ * Force every <pre> into a fenced code block regardless of inner structure.
+ * Medium often emits <pre><span>…</span></pre> without a <code> child, so the
+ * default GFM `fencedCodeBlock` rule never matches and code leaks out as a
+ * regular paragraph. This rule runs last and overrides. RSS-fallback path only.
+ */
 turndown.addRule("preBlock", {
   filter: "pre",
   replacement: (_content, node) => {
@@ -194,17 +224,287 @@ function extractImageUrls(html: string): string[] {
   return urls;
 }
 
-async function processItem(item: RssItem) {
-  const slug = slugFromLink(item.link);
-  console.error(`\n→ ${slug}`);
+// ---------------------------------------------------------------------------
+// Apollo-state path (primary): fetch the live post page, pull the embedded
+// content model, build markdown directly from it — no HTML/turndown involved.
+// ---------------------------------------------------------------------------
 
-  const assetDir = path.join(ASSET_ROOT, slug);
-  const mdPath = path.join(CONTENT_DIR, `${slug}.md`);
+async function fetchPostPage(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { "user-agent": PAGE_FETCH_UA },
+    });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
 
-  const newDate = formatDate(item.pubDate);
+function extractApolloState(html: string): Record<string, any> | null {
+  const m = html.match(
+    /window\.__APOLLO_STATE__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/,
+  );
+  if (!m) return null;
+  try {
+    return JSON.parse(m[1]);
+  } catch {
+    return null;
+  }
+}
 
-  await mkdir(assetDir, { recursive: true });
+/** Resolve `Post:*`.content(...).bodyModel.paragraphs refs into paragraph objects, in order. */
+function resolveParagraphs(
+  state: Record<string, any>,
+): ApolloParagraph[] | null {
+  const postKey = Object.keys(state).find((k) => k.startsWith("Post:"));
+  if (!postKey) return null;
+  const post = state[postKey];
+  // The GraphQL arg string in the field key can vary; match by prefix.
+  const contentKey = Object.keys(post ?? {}).find((k) =>
+    k.startsWith("content("),
+  );
+  if (!contentKey) return null;
+  const refs = post[contentKey]?.bodyModel?.paragraphs;
+  if (!Array.isArray(refs) || refs.length === 0) return null;
+  const paragraphs: ApolloParagraph[] = [];
+  for (const r of refs) {
+    const ref = r?.__ref;
+    if (!ref || !state[ref]) return null;
+    paragraphs.push(state[ref]);
+  }
+  return paragraphs;
+}
 
+function normalizeTitle(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Medium's content model repeats the post title as the first paragraph(s) of
+ * the body — a heading, sometimes followed by a bold-only paragraph
+ * restating it. Drop those (mirrors the old RSS path's STRIP_LEADING rules)
+ * so the frontmatter title isn't duplicated in the rendered body.
+ */
+function stripDuplicateTitleParagraphs(
+  paragraphs: ApolloParagraph[],
+  title: string,
+): ApolloParagraph[] {
+  const target = normalizeTitle(title);
+  const result = [...paragraphs];
+  // Walk past leading IMG paragraphs without removing them (they carry the
+  // thumbnail, handled separately) — only strip heading/bold paragraphs that
+  // duplicate the title, stopping at the first paragraph that's neither.
+  let i = 0;
+  while (i < result.length) {
+    const p = result[i];
+    if (p.type === "IMG") {
+      i++;
+      continue;
+    }
+    const text = (p.text ?? "").trim();
+    const isHeading = /^H[1-4]$/.test(p.type);
+    const isBoldOnly =
+      p.type === "P" &&
+      p.markups?.length === 1 &&
+      p.markups[0].type === "STRONG" &&
+      p.markups[0].start === 0 &&
+      p.markups[0].end === text.length;
+    if ((isHeading || isBoldOnly) && normalizeTitle(text) === target) {
+      result.splice(i, 1);
+      continue;
+    }
+    break;
+  }
+  return result;
+}
+
+/**
+ * Wrap markup spans (CODE/STRONG/EM/A) into markdown syntax. Splices from the
+ * end of the string backward so earlier offsets stay valid as we go.
+ * ponytail: no overlap handling, add interval-tree merge if a future article
+ * has nested markups (none observed in any sampled article).
+ */
+function applyMarkups(text: string, markups: ApolloMarkup[] | undefined): string {
+  if (!markups || markups.length === 0) return text;
+  const sorted = [...markups].sort((a, b) => b.start - a.start);
+  let out = text;
+  for (const m of sorted) {
+    const before = out.slice(0, m.start);
+    const inner = out.slice(m.start, m.end);
+    const after = out.slice(m.end);
+    let wrapped: string;
+    switch (m.type) {
+      case "CODE":
+        wrapped = `\`${inner}\``;
+        break;
+      case "STRONG":
+        wrapped = `**${inner}**`;
+        break;
+      case "EM":
+        wrapped = `*${inner}*`;
+        break;
+      case "A":
+        wrapped = m.href ? `[${inner}](${m.href})` : inner;
+        break;
+      default:
+        wrapped = inner;
+    }
+    out = before + wrapped + after;
+  }
+  return out;
+}
+
+/**
+ * Download every IMG paragraph's image. First one becomes the thumbnail and
+ * is dropped from the body (mirrors the old RSS-path behavior); the rest are
+ * kept as a paragraph → local-path map for buildMarkdownFromParagraphs to
+ * inline in place.
+ */
+async function downloadParagraphImages(
+  paragraphs: ApolloParagraph[],
+  slug: string,
+  assetDir: string,
+): Promise<{ thumbnail: string; localPathByParagraph: Map<ApolloParagraph, string> }> {
+  const imgParagraphs = paragraphs.filter((p) => p.type === "IMG");
+  const localPathByParagraph = new Map<ApolloParagraph, string>();
+  let thumbnail = "";
+  for (let i = 0; i < imgParagraphs.length; i++) {
+    const p = imgParagraphs[i];
+    const meta = p.metadata;
+    if (!meta?.id) continue;
+    const width = Math.min(meta.originalWidth ?? 1400, 1400);
+    const url = `https://miro.medium.com/v2/resize:fit:${width}/${meta.id}`;
+    const probe = await fetch(url, { method: "HEAD" }).catch(() => null);
+    const ct = probe?.headers.get("content-type") ?? null;
+    const ext = extFromContentType(ct, url);
+    const name = i === 0 ? `thumbnail.${ext}` : `img-${i}.${ext}`;
+    const dest = path.join(assetDir, name);
+    const ok = await downloadImage(url, dest);
+    if (!ok) continue;
+    const localPath = `/article/${slug}/${name}`;
+    if (i === 0) thumbnail = localPath;
+    else localPathByParagraph.set(p, localPath);
+  }
+  return { thumbnail, localPathByParagraph };
+}
+
+function buildMarkdownFromParagraphs(
+  paragraphs: ApolloParagraph[],
+  localPathByParagraph: Map<ApolloParagraph, string>,
+): string {
+  const lines: string[] = [];
+  let olCounter = 0;
+  for (const p of paragraphs) {
+    const text = applyMarkups(p.text ?? "", p.markups);
+    switch (p.type) {
+      case "IMG": {
+        olCounter = 0;
+        const localPath = localPathByParagraph.get(p);
+        if (localPath) lines.push(`![](${localPath})`);
+        break;
+      }
+      case "H1":
+      case "H2":
+      case "H3":
+      case "H4": {
+        olCounter = 0;
+        const level = Number(p.type[1]);
+        lines.push(`${"#".repeat(level)} ${text}`);
+        break;
+      }
+      case "PRE": {
+        olCounter = 0;
+        const codeText = p.text ?? "";
+        // Box-drawing ASCII diagrams wins over Medium's own stored language —
+        // authors often leave a diagram block's language selector on
+        // whatever was last used (seen: "sql", "graphql" on tree/flow art).
+        const lang = /[┌└├┤┬┴┼─│►▼◄▲]/.test(codeText)
+          ? "text"
+          : p.codeBlockMetadata?.lang || detectLanguage(codeText);
+        lines.push(`\`\`\`${lang}\n${codeText}\n\`\`\``);
+        break;
+      }
+      case "BQ":
+      case "PQ":
+        olCounter = 0;
+        lines.push(`> ${text}`);
+        break;
+      case "ULI":
+        olCounter = 0;
+        lines.push(`- ${text}`);
+        break;
+      case "OLI":
+        olCounter += 1;
+        lines.push(`${olCounter}. ${text}`);
+        break;
+      case "P":
+        olCounter = 0;
+        lines.push(text);
+        break;
+      default:
+        // ponytail: fallback-as-paragraph ceiling, add a real case if this warns
+        olCounter = 0;
+        console.warn(
+          `  ! unhandled paragraph type "${p.type}", rendering as plain text`,
+        );
+        lines.push(text);
+    }
+  }
+  return lines.join("\n\n").trim();
+}
+
+type SyncedBody = { markdown: string; thumbnail: string; description: string };
+
+async function buildFromApolloState(
+  item: RssItem,
+  slug: string,
+  assetDir: string,
+): Promise<SyncedBody | null> {
+  const html = await fetchPostPage(item.link);
+  if (!html) {
+    console.warn(`  ! could not fetch live page, falling back to RSS`);
+    return null;
+  }
+  const state = extractApolloState(html);
+  if (!state) {
+    console.warn(`  ! no __APOLLO_STATE__ found, falling back to RSS`);
+    return null;
+  }
+  const rawParagraphs = resolveParagraphs(state);
+  if (!rawParagraphs) {
+    console.warn(`  ! could not resolve paragraph model, falling back to RSS`);
+    return null;
+  }
+  const paragraphs = stripDuplicateTitleParagraphs(rawParagraphs, item.title);
+  if (paragraphs.length === 0) return null;
+
+  const { thumbnail, localPathByParagraph } = await downloadParagraphImages(
+    paragraphs,
+    slug,
+    assetDir,
+  );
+  const markdown = buildMarkdownFromParagraphs(paragraphs, localPathByParagraph);
+  if (markdown.length === 0) return null;
+
+  const description = paragraphs
+    .filter((p) => p.type === "P")
+    .map((p) => p.text ?? "")
+    .join(" ")
+    .slice(0, 200);
+
+  return { markdown, thumbnail, description };
+}
+
+// ---------------------------------------------------------------------------
+// RSS + turndown path (fallback): today's original behavior, unchanged.
+// ---------------------------------------------------------------------------
+
+async function buildFromRss(
+  item: RssItem,
+  slug: string,
+  assetDir: string,
+): Promise<SyncedBody> {
   let body = item["content:encoded"];
   // Drop Medium's trailing 1x1 view-tracking pixel <img> before anything else,
   // or turndown renders it as a remote ![](…/_/stat?…) at the end of the body.
@@ -276,18 +576,36 @@ async function processItem(item: RssItem) {
 
   // HTML → Markdown
   const markdown = turndown.turndown(body).trim();
-  if (markdown.length === 0) {
+  const description = plainText(body).slice(0, 200);
+
+  return { markdown, thumbnail, description };
+}
+
+async function processItem(item: RssItem) {
+  const slug = slugFromLink(item.link);
+  console.error(`\n→ ${slug}`);
+
+  const assetDir = path.join(ASSET_ROOT, slug);
+  const mdPath = path.join(CONTENT_DIR, `${slug}.md`);
+  const newDate = formatDate(item.pubDate);
+
+  await mkdir(assetDir, { recursive: true });
+
+  const synced =
+    (await buildFromApolloState(item, slug, assetDir)) ??
+    (await buildFromRss(item, slug, assetDir));
+
+  if (synced.markdown.length === 0) {
     console.warn(`  ! empty markdown body, skipping`);
     return;
   }
 
-  const description = plainText(body).slice(0, 200);
   const tags = unwrap(item.category);
 
   const frontmatter = {
     title: item.title,
-    description,
-    thumbnail: thumbnail || "",
+    description: synced.description,
+    thumbnail: synced.thumbnail || "",
     createdAt: newDate,
     writer: WRITER,
     tag: tags,
@@ -295,7 +613,7 @@ async function processItem(item: RssItem) {
     sourceUrl: item.link,
   };
 
-  const fileContent = matter.stringify(`${markdown}\n`, frontmatter);
+  const fileContent = matter.stringify(`${synced.markdown}\n`, frontmatter);
   await writeFile(mdPath, fileContent);
   console.error(`  ✓ wrote ${mdPath}`);
   await stat(mdPath);

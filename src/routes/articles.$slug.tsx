@@ -3,7 +3,6 @@ import { useEffect } from "react";
 import { ArticleBody } from "../components/article-body";
 import { ArticleThumbnail } from "../components/article-thumbnail";
 import { Byline } from "../components/byline";
-import { Dek } from "../components/dek";
 import { Kicker } from "../components/kicker";
 import { RuleDouble } from "../components/rules";
 import { ArticleProgress } from "../components/article-progress";
@@ -99,7 +98,6 @@ function ArticlePage() {
 				<h1 className="font-serif-display leading-[1.05] mt-3 text-3xl md:text-4xl lg:text-5xl xl:text-headline">
 					{article.title}
 				</h1>
-				<Dek className="mt-4">{article.description}</Dek>
 				<div className="mt-4 flex flex-col items-center gap-2">
 					<Byline writer={article.writer} date={article.createdAt} />
 					<span className="small-caps text-xs text-fg-muted">
