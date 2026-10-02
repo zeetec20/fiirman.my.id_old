@@ -65,7 +65,7 @@ git:
 
 Save the file and open Lazygit again. You should see a difference like in the image below, with a cleaner and more readable diff section.
 
-![](/article/i-love-lazygit-but-its-missing-one-thing/img-1.png)
+![lazygit diff section](/article/i-love-lazygit-but-its-missing-one-thing/img-1.png)
 
 Now the diff section should use git-split-diffs instead of the default diff view. This small change has made Lazygit much easier for me to use because I can read changes in a format that’s closer to the GitHub diff UI.
 
