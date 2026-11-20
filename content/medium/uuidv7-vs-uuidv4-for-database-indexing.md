@@ -47,15 +47,55 @@ Several languages, databases, and ORMs now support UUIDv7 natively, while others
 
 ### Programming languages
 
-<a href="https://medium.com/media/9936200bdfdd866f1b0547b683bab246/href">https://medium.com/media/9936200bdfdd866f1b0547b683bab246/href</a>
+```text
++----------------------+---------+----------------------------------------+
+| ORM / Framework      | Support | Implementation                         |
++----------------------+---------+----------------------------------------+
+| Prisma               | Library | @default(uuid(7))                      |
+| Drizzle ORM          | Library | SQL uuidv7() or application generator  |
+| TypeORM              | Library | External UUID generator                |
+| Sequelize            | Library | Application-side generation            |
+| MikroORM             | Library | Custom UUID generator                  |
+| SQLAlchemy           | Library | Python uuid.uuid7()                    |
+| Entity Framework Core| Native  | .NET 9 Guid.CreateVersion7()           |
+| GORM                 | Library | UUID package                           |
++----------------------+---------+----------------------------------------+
+```
 
 ### Database support
 
-<a href="https://medium.com/media/4d3ab4c579fdb334f6b3db071a2b81b5/href">https://medium.com/media/4d3ab4c579fdb334f6b3db071a2b81b5/href</a>
+```text
++------------------------+----------------------+-------------------------+
+| Database               | UUIDv7 Storage       | Native Generation       |
++------------------------+----------------------+-------------------------+
+| PostgreSQL 18+         | UUID                 | uuidv7()                |
+| MySQL                  | BINARY(16) / CHAR(36)| No                      |
+| MariaDB 11.7+          | UUID                 | UUID_v7()               |
+| SQL Server             | UNIQUEIDENTIFIER     | No                      |
+| SQLite                 | BLOB / TEXT          | No                      |
+| MongoDB                | Binary UUID          | No                      |
+| CockroachDB            | UUID                 | Version-dependent       |
+| Oracle Database 26ai   | RAW(16)              | No                      |
+| Redis                  | String               | No                      |
++------------------------+----------------------+-------------------------+
+```
 
 ### ORM and query builder support
 
-<a href="https://medium.com/media/012c80fe7f2d3bc4671b4396380a569d/href">https://medium.com/media/012c80fe7f2d3bc4671b4396380a569d/href</a>
+```text
++----------------------+---------+----------------------------------------+
+| ORM / Framework      | Support | Implementation                         |
++----------------------+---------+----------------------------------------+
+| Prisma               | Library | @default(uuid(7))                      |
+| Drizzle ORM          | Library | SQL uuidv7() or application generator  |
+| TypeORM              | Library | External UUID generator                |
+| Sequelize            | Library | Application-side generation            |
+| MikroORM             | Library | Custom UUID generator                  |
+| SQLAlchemy           | Library | Python uuid.uuid7()                    |
+| Entity Framework Core| Native  | .NET 9 Guid.CreateVersion7()           |
+| GORM                 | Library | UUID package                           |
++----------------------+---------+----------------------------------------+
+```
 
 Most of these ORMs rely on application-side generators or database functions to produce UUIDv7 values rather than generating them natively.
 
